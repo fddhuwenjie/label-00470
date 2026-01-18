@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  backend:
+    image: mqtt-ntrip-backend
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mqtt-ntrip-gateway
+    restart: unless-stopped
+    ports:
+      - "9999:1883"  # MQTT Port
+    volumes:
+      # 挂载配置文件，以便运行时修改配置而无需重建镜像
+      - ./backend/appsettings.json:/app/appsettings.json
+      # 挂载日志目录 (根据 appsettings.json 中的配置)
+      - ./logs:/app/logs
+    environment:
+      - TZ=Asia/Shanghai
+    # 确保有足够的权限（如果需要绑定低端口或其他系统操作）
+    # privileged: true 

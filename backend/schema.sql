@@ -1,0 +1,2 @@
+-- No database schema required for the Gateway mode.
+-- If user management is added later, add CREATE TABLE statements here.
