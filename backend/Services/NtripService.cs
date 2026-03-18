@@ -18,15 +18,31 @@ namespace Backend.Services
         private NetworkStream? _stream;
         private readonly SemaphoreSlim _lock = new SemaphoreSlim(1, 1);
         private bool _isConnected = false;
+        private bool _enabled = true;
 
         public NtripService(AppConfig config, ILogger<NtripService> logger)
         {
             _config = config.Ntrip;
             _logger = logger;
+
+            // 检查是否为示例/未配置的地址，如果是则禁用自动连接
+            if (string.IsNullOrWhiteSpace(_config.TargetCasterHost) 
+                || _config.TargetCasterHost.Contains("example.com")
+                || _config.TargetCasterHost == "localhost" && _config.TargetCasterPort == 0)
+            {
+                _enabled = false;
+                _logger.LogWarning("⚠️ NTRIP Service DISABLED: TargetCasterHost is not configured (current: '{Host}'). Please update appsettings.json with a valid caster address.", _config.TargetCasterHost);
+            }
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
+            if (!_enabled)
+            {
+                _logger.LogInformation("NTRIP Service is disabled due to missing configuration. Waiting for config update...");
+                return;
+            }
+
             while (!stoppingToken.IsCancellationRequested)
             {
                 if (!_isConnected)
@@ -35,16 +51,59 @@ namespace Backend.Services
                     {
                         await ConnectToCasterAsync(stoppingToken);
                     }
+                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                    {
+                        break;
+                    }
                     catch (Exception ex)
                     {
                         _logger.LogError(ex, "Failed to connect to NTRIP Caster. Retrying in 5 seconds...");
-                        await Task.Delay(5000, stoppingToken);
+                        try
+                        {
+                            await Task.Delay(5000, stoppingToken);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            break;
+                        }
+                    }
+                }
+                else
+                {
+                    // 主动检测连接是否还活着
+                    try
+                    {
+                        if (_tcpClient != null && _tcpClient.Client != null)
+                        {
+                            // Poll: SelectRead 返回 true 且 Available == 0 表示对端已关闭
+                            if (_tcpClient.Client.Poll(0, System.Net.Sockets.SelectMode.SelectRead) && _tcpClient.Client.Available == 0)
+                            {
+                                _logger.LogWarning("NTRIP Caster connection lost. Reconnecting...");
+                                Disconnect();
+                                continue;
+                            }
+                        }
+                        else
+                        {
+                            Disconnect();
+                            continue;
+                        }
+                    }
+                    catch
+                    {
+                        Disconnect();
+                        continue;
                     }
                 }
                 
-                // Keep connection check or heartbeat if needed
-                // For now just wait a bit
-                await Task.Delay(1000, stoppingToken);
+                try
+                {
+                    await Task.Delay(1000, stoppingToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
             }
         }
 
@@ -59,13 +118,11 @@ namespace Backend.Services
                 _stream = _tcpClient.GetStream();
 
                 // Send SOURCE handshake
-                // Protocol: SOURCE <password> <mountpoint>\r\nSource-Agent: NTRIP-C#\r\n\r\n
                 string handshake = $"SOURCE {_config.Password} {_config.Mountpoint}\r\nSource-Agent: NTRIP-CSharp-Gateway\r\n\r\n";
                 byte[] data = Encoding.ASCII.GetBytes(handshake);
                 await _stream.WriteAsync(data, 0, data.Length, stoppingToken);
 
                 // Read response
-                // Expect "ICY 200 OK" or similar
                 byte[] buffer = new byte[1024];
                 int bytesRead = await _stream.ReadAsync(buffer, 0, buffer.Length, stoppingToken);
                 string response = Encoding.ASCII.GetString(buffer, 0, bytesRead);
@@ -78,8 +135,7 @@ namespace Backend.Services
                 else
                 {
                     _logger.LogError("❌ NTRIP Connection FAILED. Response: {Response}", response.Trim());
-                    _tcpClient.Close();
-                    _isConnected = false;
+                    Disconnect();
                 }
             }
             finally
@@ -90,10 +146,12 @@ namespace Backend.Services
 
         public async Task SendDataAsync(byte[] data)
         {
-            if (!_isConnected || _stream == null)
+            if (!_enabled || !_isConnected || _stream == null)
             {
-                // Optionally buffer or just drop
-                _logger.LogWarning("NTRIP Caster not connected. Dropping data packet ({Size} bytes).", data.Length);
+                if (_enabled)
+                {
+                    _logger.LogWarning("NTRIP Caster not connected. Dropping data packet ({Size} bytes).", data.Length);
+                }
                 return;
             }
 
@@ -102,11 +160,10 @@ namespace Backend.Services
                 await _lock.WaitAsync();
                 try
                 {
-                    if (_stream.CanWrite)
+                    if (_stream != null && _stream.CanWrite)
                     {
                         await _stream.WriteAsync(data, 0, data.Length);
                         await _stream.FlushAsync();
-                        // _logger.LogDebug("Sent {Size} bytes to NTRIP Caster", data.Length);
                     }
                 }
                 finally
@@ -117,14 +174,22 @@ namespace Backend.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error sending data to NTRIP Caster. Disconnecting...");
-                _isConnected = false;
-                try { _tcpClient?.Close(); } catch { }
+                Disconnect();
             }
+        }
+
+        private void Disconnect()
+        {
+            _isConnected = false;
+            try { _stream?.Dispose(); } catch { }
+            try { _tcpClient?.Close(); } catch { }
+            _stream = null;
+            _tcpClient = null;
         }
 
         public override void Dispose()
         {
-            _tcpClient?.Dispose();
+            Disconnect();
             _lock.Dispose();
             base.Dispose();
         }
