@@ -16,11 +16,12 @@ FROM build AS publish
 RUN dotnet publish "backend.csproj" -c Release -o /app/publish /p:UseAppHost=false
 
 # 最终运行阶段
-FROM mcr.microsoft.com/dotnet/runtime:6.0 AS final
+FROM mcr.microsoft.com/dotnet/aspnet:6.0 AS final
 WORKDIR /app
 COPY --from=publish /app/publish .
 
-# 暴露端口 (MQTT默认端口)
+# 暴露端口 (MQTT默认端口和HTTP API端口)
 EXPOSE 1883
+EXPOSE 5000
 
 ENTRYPOINT ["dotnet", "backend.dll"]

@@ -10,6 +10,7 @@ services:
     restart: unless-stopped
     ports:
       - "9999:1883"  # MQTT Port
+      - "5000:5000"  # HTTP API Port
     volumes:
       # 挂载配置文件，以便运行时修改配置而无需重建镜像
       - ./backend/appsettings.json:/app/appsettings.json

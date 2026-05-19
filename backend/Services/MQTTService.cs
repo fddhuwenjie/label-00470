@@ -1,5 +1,4 @@
 using System;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Backend.Models;
@@ -11,6 +10,9 @@ using MQTTnet.Server;
 
 namespace Backend.Services
 {
+    /// <summary>
+    /// MQTT 服务，监听 MQTT 消息并根据 Topic 路由到对应的 NTRIP 客户端
+    /// </summary>
     public class MQTTService : BackgroundService
     {
         private readonly AppConfig _config;
@@ -18,6 +20,12 @@ namespace Backend.Services
         private readonly NtripService _ntripService;
         private MqttServer? _mqttServer;
 
+        /// <summary>
+        /// 初始化 MQTT 服务
+        /// </summary>
+        /// <param name="config">应用程序配置</param>
+        /// <param name="logger">日志记录器</param>
+        /// <param name="ntripService">NTRIP 服务管理器</param>
         public MQTTService(AppConfig config, ILogger<MQTTService> logger, NtripService ntripService)
         {
             _config = config;
@@ -25,6 +33,11 @@ namespace Backend.Services
             _ntripService = ntripService;
         }
 
+        /// <summary>
+        /// 后台服务执行入口
+        /// </summary>
+        /// <param name="stoppingToken">停止令牌</param>
+        /// <returns>任务</returns>
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             var optionsBuilder = new MqttServerOptionsBuilder()
@@ -39,7 +52,6 @@ namespace Backend.Services
             await _mqttServer.StartAsync();
             _logger.LogInformation("✅ MQTT Service STARTED. Listening on port: {Port}", _config.Mqtt.Port);
 
-            // Wait until cancellation
             try
             {
                 await Task.Delay(Timeout.Infinite, stoppingToken);
@@ -57,6 +69,11 @@ namespace Backend.Services
             }
         }
 
+        /// <summary>
+        /// 验证 MQTT 连接
+        /// </summary>
+        /// <param name="arg">连接验证参数</param>
+        /// <returns>任务</returns>
         private Task ValidateConnection(ValidatingConnectionEventArgs arg)
         {
             if (string.IsNullOrEmpty(_config.Mqtt.Auth.Username))
@@ -77,23 +94,21 @@ namespace Backend.Services
             return Task.CompletedTask;
         }
 
+        /// <summary>
+        /// 拦截并处理发布的消息，根据 Topic 路由到对应的 NTRIP 客户端
+        /// </summary>
+        /// <param name="arg">发布事件参数</param>
+        /// <returns>任务</returns>
         private async Task InterceptMessage(InterceptingPublishEventArgs arg)
         {
-            // Check if topic matches
-            if (arg.ApplicationMessage.Topic == _config.Ntrip.SourceTopic)
+            string topic = arg.ApplicationMessage.Topic;
+            byte[] payload = arg.ApplicationMessage.PayloadSegment.ToArray();
+
+            if (payload != null && payload.Length > 0)
             {
-                // Forward to NTRIP Service
-                byte[] payload = arg.ApplicationMessage.PayloadSegment.ToArray();
-                if (payload != null && payload.Length > 0)
-                {
-                    _logger.LogDebug("Received {Bytes} bytes on topic {Topic}, forwarding to NTRIP...", payload.Length, arg.ApplicationMessage.Topic);
-                    await _ntripService.SendDataAsync(payload);
-                }
+                _logger.LogDebug("Received {Bytes} bytes on topic {Topic}", payload.Length, topic);
+                await _ntripService.SendDataByTopicAsync(topic, payload);
             }
-            
-            // Allow message to proceed (e.g. to other subscribers)
-            // If we only want to act as a bridge and not store/forward to others, we can set arg.ProcessPublish = false?
-            // Usually we leave it to be distributed to subscribers if any.
         }
     }
 }
