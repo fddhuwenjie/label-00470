@@ -3,6 +3,7 @@ using System.IO;
 using System.Threading.Tasks;
 using Backend.Models;
 using Backend.Services;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -14,7 +15,6 @@ namespace Backend
     {
         static async Task Main(string[] args)
         {
-            // Setup Serilog first for early logging
             Log.Logger = new LoggerConfiguration()
                 .MinimumLevel.Information()
                 .WriteTo.Console()
@@ -28,45 +28,52 @@ namespace Backend
 
                 Log.Information("Initializing System...");
 
-                IHost host = Host.CreateDefaultBuilder(args)
-                    .ConfigureAppConfiguration((context, config) =>
+                var builder = WebApplication.CreateBuilder(args);
+
+                builder.Configuration
+                    .SetBasePath(Directory.GetCurrentDirectory())
+                    .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true);
+
+                builder.Host.UseSerilog((context, services, configuration) => configuration
+                    .ReadFrom.Configuration(context.Configuration)
+                    .Enrich.FromLogContext()
+                    .WriteTo.Console());
+
+                var appConfig = new AppConfig();
+                builder.Configuration.Bind(appConfig);
+                builder.Services.AddSingleton(appConfig);
+
+                Log.Information("Configuration loaded successfully.");
+                Log.Information("  > MQTT Port: {Port}", appConfig.Mqtt.Port);
+                Log.Information("  > API Port: {Port}", appConfig.Mqtt.ApiPort);
+                Log.Information("  > NTRIP Targets: {Count}", appConfig.NtripTargets?.Length ?? 0);
+
+                if (appConfig.NtripTargets != null)
+                {
+                    foreach (var target in appConfig.NtripTargets)
                     {
-                        var path = Path.Combine(Directory.GetCurrentDirectory(), "appsettings.json");
-                        Log.Information("Loading configuration from: {Path}", path);
-                        if (!File.Exists(path))
-                        {
-                            Log.Warning("Configuration file not found at expected path!");
-                        }
-                        
-                        config.SetBasePath(Directory.GetCurrentDirectory());
-                        config.AddJsonFile("appsettings.json", optional: false, reloadOnChange: true);
-                    })
-                    .UseSerilog((context, services, configuration) => configuration
-                        .ReadFrom.Configuration(context.Configuration)
-                        .Enrich.FromLogContext()
-                        .WriteTo.Console())
-                    .ConfigureServices((context, services) =>
-                    {
-                        // Bind Configuration
-                        var appConfig = new AppConfig();
-                        context.Configuration.Bind(appConfig);
-                        services.AddSingleton(appConfig);
+                        Log.Information("    - {Topic} -> {Host}:{Port}/{Mount}",
+                            target.SourceTopic, target.TargetCasterHost, target.TargetCasterPort, target.Mountpoint);
+                    }
+                }
 
-                        Log.Information("Configuration loaded successfully.");
-                        Log.Information("  > MQTT Port: {Port}", appConfig.Mqtt.Port);
-                        Log.Information("  > Target Caster: {Host}:{Port}", appConfig.Ntrip.TargetCasterHost, appConfig.Ntrip.TargetCasterPort);
-                        Log.Information("  > Mountpoint: {Mount}", appConfig.Ntrip.Mountpoint);
+                builder.Services.AddSingleton<NtripService>();
+                builder.Services.AddHostedService(sp => sp.GetRequiredService<NtripService>());
+                builder.Services.AddHostedService<MQTTService>();
 
-                        // Register Services
-                        services.AddSingleton<NtripService>();
-                        services.AddHostedService(sp => sp.GetRequiredService<NtripService>());
-                        
-                        services.AddHostedService<MQTTService>();
-                    })
-                    .Build();
+                builder.WebHost.UseUrls($"http://*:{appConfig.Mqtt.ApiPort}");
 
-                Log.Information("Services initialized. Starting Host...");
-                await host.RunAsync();
+                var app = builder.Build();
+
+                app.MapGet("/api/status", (NtripService ntripService) =>
+                {
+                    return Results.Ok(ntripService.GetAllStatus());
+                })
+                .WithName("GetNtripStatus")
+                .WithDescription("获取所有 NTRIP 连接的当前状态信息");
+
+                Log.Information("Services initialized. Starting Host (API on port {Port})...", appConfig.Mqtt.ApiPort);
+                await app.RunAsync();
             }
             catch (Exception ex)
             {
