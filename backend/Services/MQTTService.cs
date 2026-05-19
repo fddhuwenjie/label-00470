@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -15,14 +16,24 @@ namespace Backend.Services
     {
         private readonly AppConfig _config;
         private readonly ILogger<MQTTService> _logger;
-        private readonly NtripService _ntripService;
+        private readonly Dictionary<string, NtripService> _ntripServicesByTopic;
         private MqttServer? _mqttServer;
 
-        public MQTTService(AppConfig config, ILogger<MQTTService> logger, NtripService ntripService)
+        public MQTTService(AppConfig config, ILogger<MQTTService> logger, IEnumerable<NtripService> ntripServices)
         {
             _config = config;
             _logger = logger;
-            _ntripService = ntripService;
+            _ntripServicesByTopic = new Dictionary<string, NtripService>();
+
+            foreach (var ntripService in ntripServices)
+            {
+                var topic = ntripService.Config.SourceTopic;
+                if (!string.IsNullOrEmpty(topic))
+                {
+                    _ntripServicesByTopic[topic] = ntripService;
+                    _logger.LogInformation("MQTT Service: Registered topic '{Topic}' -> NtripService for mountpoint '{Mountpoint}'", topic, ntripService.Config.Mountpoint);
+                }
+            }
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -37,16 +48,14 @@ namespace Backend.Services
             _mqttServer.InterceptingPublishAsync += InterceptMessage;
 
             await _mqttServer.StartAsync();
-            _logger.LogInformation("✅ MQTT Service STARTED. Listening on port: {Port}", _config.Mqtt.Port);
+            _logger.LogInformation("MQTT Service STARTED. Listening on port: {Port}", _config.Mqtt.Port);
 
-            // Wait until cancellation
             try
             {
                 await Task.Delay(Timeout.Infinite, stoppingToken);
             }
             catch (TaskCanceledException)
             {
-                // Graceful shutdown
             }
             finally
             {
@@ -79,21 +88,17 @@ namespace Backend.Services
 
         private async Task InterceptMessage(InterceptingPublishEventArgs arg)
         {
-            // Check if topic matches
-            if (arg.ApplicationMessage.Topic == _config.Ntrip.SourceTopic)
+            string topic = arg.ApplicationMessage.Topic;
+
+            if (_ntripServicesByTopic.TryGetValue(topic, out var targetService))
             {
-                // Forward to NTRIP Service
                 byte[] payload = arg.ApplicationMessage.PayloadSegment.ToArray();
                 if (payload != null && payload.Length > 0)
                 {
-                    _logger.LogDebug("Received {Bytes} bytes on topic {Topic}, forwarding to NTRIP...", payload.Length, arg.ApplicationMessage.Topic);
-                    await _ntripService.SendDataAsync(payload);
+                    _logger.LogDebug("Received {Bytes} bytes on topic {Topic}, forwarding to NTRIP mountpoint {Mountpoint}...", payload.Length, topic, targetService.Config.Mountpoint);
+                    await targetService.SendDataAsync(payload);
                 }
             }
-            
-            // Allow message to proceed (e.g. to other subscribers)
-            // If we only want to act as a bridge and not store/forward to others, we can set arg.ProcessPublish = false?
-            // Usually we leave it to be distributed to subscribers if any.
         }
     }
 }
