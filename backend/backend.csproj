@@ -12,6 +12,10 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="6.0.1" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="6.0.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="6.0.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Http" Version="6.0.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Routing" Version="6.0.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Server.Kestrel" Version="6.0.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Diagnostics" Version="6.0.0" />
     <PackageReference Include="Serilog.Extensions.Hosting" Version="5.0.1" />
     <PackageReference Include="Serilog.Sinks.Console" Version="4.1.0" />
     <PackageReference Include="Serilog.Settings.Configuration" Version="3.4.0" />
